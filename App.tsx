@@ -47,7 +47,13 @@ import {
   RotateCcw,
   Copy,
   MoreHorizontal,
-  Database
+  Database,
+  GitPullRequest,
+  PlusCircle,
+  CornerDownRight,
+  Monitor,
+  Tag,
+  HardDrive
 } from 'lucide-react';
 import { ICommit, IRepoState, FileStatus, IContextMenu, TaskType } from './types';
 import { generateSmartCommitMessage, askGitMentorWithSearch, shapeProject, IAiGeneratedFile, streamChatResponse, explainChanges } from './services/geminiService';
@@ -72,6 +78,15 @@ const INITIAL_REPO_STATE: IRepoState = {
   originalFiles: { ...INITIAL_FILES },
   fileStatuses: {}, // Initial cache empty
   commits: [
+    {
+      id: 'd5e6f7g',
+      message: 'fix: critical bug in login',
+      author: 'Senior Dev',
+      timestamp: Date.now() - 1800000,
+      changes: {},
+      parent: 'c9d8e7f',
+      lane: 2
+    },
     {
       id: 'c9d8e7f',
       message: 'Merge branch \'feature/auth\'',
@@ -212,7 +227,6 @@ const DiffViewer = ({
         const M = newLines.length;
         
         // DP Matrix for LCS
-        // Flattened array for performance
         const dp = new Int32Array((N + 1) * (M + 1));
         const getDp = (i: number, j: number) => dp[i * (M + 1) + j];
         const setDp = (i: number, j: number, val: number) => dp[i * (M + 1) + j] = val;
@@ -317,7 +331,7 @@ const DiffViewer = ({
     )
 }
 
-// --- Module 3: Graph Visualization ---
+// --- Module 3: Graph Visualization (Strictly Orthogonal / Square Style) ---
 const GitGraph = ({ 
     commits, 
     onRowContextMenu,
@@ -327,65 +341,155 @@ const GitGraph = ({
     onRowContextMenu: (e: React.MouseEvent, commitId: string) => void,
     onReset: (id: string) => void
 }) => {
+    // Configuração para visual "Square" (Tortoise/GitExtensions style)
+    const ROW_HEIGHT = 40;
+    const COL_WIDTH = 20;
+    const OFFSET_X = 24;
+    const NODE_RADIUS = 4;
+
+    // Função auxiliar para gerar cores por lane
+    const getLaneColor = (lane: number) => {
+        const colors = ['#dc2626', '#2563eb', '#16a34a', '#9333ea', '#ea580c', '#0891b2'];
+        return colors[lane % colors.length];
+    };
+
     return (
-        <div className="relative w-full pb-12">
+        <div className="relative w-full pb-12 select-none font-mono text-sm bg-white">
             {commits.map((commit, idx) => {
-                const isMerge = !!commit.secondaryParent;
                 const lane = commit.lane || 0;
-                const xPos = 20 + (lane * 20);
+                const cx = OFFSET_X + (lane * COL_WIDTH);
+                const cy = 20; // Centralizado verticalmente na linha (ROW_HEIGHT / 2)
+
+                const parent = commits.find(c => c.id === commit.parent);
+                const secParent = commits.find(c => c.id === commit.secondaryParent);
                 
-                // Calculate connection lines
                 let lines = [];
-                // Line to next commit (child) - simplified logic for visual demo
-                if (idx > 0) {
-                    const childLane = commits[idx - 1].lane || 0;
-                     // If same lane
-                    if (childLane === lane) {
-                         lines.push(<line key="straight" x1={xPos} y1={0} x2={xPos} y2={32} stroke="#94a3b8" strokeWidth="2" />);
+
+                // 1. Conexão com Pai Primário (Square/Orthogonal)
+                if (parent) {
+                    const parentLane = parent.lane || 0;
+                    const px = OFFSET_X + (parentLane * COL_WIDTH);
+                    
+                    // Cor da linha segue a cor do filho (commit atual)
+                    const strokeColor = getLaneColor(lane);
+
+                    if (lane === parentLane) {
+                        // Linha reta vertical
+                        lines.push(
+                            <path 
+                                key={`p-${commit.id}`} 
+                                d={`M ${cx} ${cy} L ${cx} ${ROW_HEIGHT + cy}`} // Estende até o próximo bloco
+                                stroke={strokeColor} 
+                                strokeWidth="2" 
+                            />
+                        );
                     } else {
-                        // Curved line from merge
-                        lines.push(<path key="merge" d={`M${20 + childLane * 20},0 C${20 + childLane * 20},16 ${xPos},16 ${xPos},32`} fill="none" stroke="#94a3b8" strokeWidth="2" />);
+                        // Ramificação Ortogonal (Branching)
+                        // Desenha um "L" ou degrau: Desce metade, vai para o lado, desce resto
+                        const midY = cy + (ROW_HEIGHT / 2);
+                        
+                        // Lógica: Sai do Commit -> Desce um pouco -> Vira horizontal -> Vai até a lane do pai -> Desce
+                        lines.push(
+                            <path 
+                                key={`fork-${commit.id}`} 
+                                d={`M ${cx} ${cy} L ${cx} ${midY} L ${px} ${midY} L ${px} ${ROW_HEIGHT + 20}`} 
+                                fill="none" 
+                                stroke={strokeColor} 
+                                strokeWidth="2"
+                            />
+                        );
+                        
+                        // Marcador Quadrado no "Cotovelo" (Junction Point)
+                        // Indica visualmente onde a branch "nasce" ou conecta
+                        lines.push(
+                            <rect 
+                                key={`elbow-${commit.id}`}
+                                x={px - 3}
+                                y={midY - 3}
+                                width={6}
+                                height={6}
+                                fill={strokeColor}
+                            />
+                        );
                     }
                 }
 
-                // Color logic
-                const nodeColor = lane === 0 ? '#3b82f6' : '#10b981'; // Blue for master, Green for feature
+                // 2. Conexão com Pai Secundário (Merge)
+                if (secParent) {
+                    const secLane = secParent.lane || 0;
+                    const sx = OFFSET_X + (secLane * COL_WIDTH);
+                    const midY = cy + 10; // Pequeno offset para não sobrepor totalmente
+                    
+                    lines.push(
+                         <path 
+                            key={`merge-${commit.id}`} 
+                            d={`M ${cx} ${cy} L ${cx} ${midY} L ${sx} ${midY} L ${sx} ${ROW_HEIGHT + 20}`} 
+                            fill="none" 
+                            stroke="#64748b" // Cor neutra para merge line secundária
+                            strokeWidth="1.5"
+                            strokeDasharray="2 2"
+                        />
+                    );
+                    // Marcador de Merge
+                    lines.push(
+                        <rect key={`mk-merge-${commit.id}`} x={sx - 2} y={midY - 2} width={4} height={4} fill="#64748b" />
+                    );
+                }
 
                 return (
                     <div 
                         key={commit.id} 
-                        className="flex h-8 items-center hover:bg-slate-100 group transition-colors px-2 rounded cursor-pointer relative pr-20"
-                        onContextMenu={(e) => onRowContextMenu(e, commit.id)}
+                        className="flex h-10 items-center hover:bg-blue-50 group transition-colors px-2 relative border-b border-slate-100"
+                        style={{ height: ROW_HEIGHT }}
+                        // CRUCIAL: e.stopPropagation impede que o clique borbulhe para a div principal
+                        // Isso garante que o menu de contexto do commit abra, não o genérico
+                        onContextMenu={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation(); 
+                            onRowContextMenu(e, commit.id);
+                        }}
                     >
-                        <div className="w-24 flex-shrink-0 relative h-full">
-                            <svg className="absolute inset-0 w-full h-full pointer-events-none">
+                        {/* Área do SVG (Linhas e Pontos) */}
+                        <div className="w-40 flex-shrink-0 relative h-full overflow-visible" style={{ minWidth: '160px' }}>
+                             <svg className="absolute inset-0 w-full h-full overflow-visible pointer-events-none">
                                 {lines}
-                                <circle cx={xPos} cy={16} r={4} fill={nodeColor} stroke="white" strokeWidth="2" />
-                            </svg>
-                        </div>
-                        <div className="flex-1 flex items-center gap-4 border-b border-slate-100 h-full pr-4 text-xs relative">
-                             <span className="font-mono text-slate-400 w-16 bg-slate-50 px-1 rounded text-center">{commit.id.substring(0, 7)}</span>
-                             <span className="flex-1 font-medium text-slate-700 truncate group-hover:text-blue-600 transition-colors">{commit.message}</span>
-                             <span className="text-slate-500 w-24 truncate flex items-center gap-1"><GitBranch size={10}/> {commit.author}</span>
-                             <span className="text-slate-400 w-20 text-right">{new Date(commit.timestamp).toLocaleDateString()}</span>
+                                {/* Commit Node (Quadrado ou Circulo preenchido) */}
+                                <rect 
+                                    x={cx - 5} 
+                                    y={cy - 5} 
+                                    width={10} 
+                                    height={10} 
+                                    fill={getLaneColor(lane)} 
+                                    stroke="white" 
+                                    strokeWidth="2" 
+                                    rx="2" // Levemente arredondado para ficar elegante mas "quadrado"
+                                />
+                             </svg>
                         </div>
 
-                         {/* Actions Overlay (Visible on Group Hover) */}
-                         <div className="absolute right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-100 pl-2">
-                             <button 
-                                onClick={(e) => { e.stopPropagation(); onReset(commit.id); }}
-                                className="p-1 hover:bg-red-100 text-slate-400 hover:text-red-600 rounded transition-colors"
-                                title="NexusVC: Resetar para esta revisão"
-                             >
-                                <RotateCcw size={14} />
-                            </button>
-                             <button 
-                                onClick={(e) => { e.stopPropagation(); onRowContextMenu(e, commit.id); }}
-                                className="p-1 hover:bg-blue-100 text-slate-400 hover:text-blue-600 rounded transition-colors"
-                                title="Mais Opções"
-                             >
-                                <MoreHorizontal size={14} />
-                            </button>
+                        {/* Info do Commit */}
+                         <div className="flex-1 flex items-center gap-3 h-full pr-4 overflow-hidden cursor-default">
+                             <span className="font-mono text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 min-w-[60px] text-center">
+                                 {commit.id.substring(0, 7)}
+                             </span>
+                             
+                             <span className="flex-1 text-xs font-medium text-slate-700 truncate flex items-center gap-2">
+                                 {commit.message}
+                                 {commit.tags && commit.tags.map(t => (
+                                     <span key={t} className="px-1.5 py-0.5 bg-yellow-100 text-yellow-800 text-[9px] font-bold rounded border border-yellow-200 flex items-center shadow-sm">
+                                         <Tag size={8} className="mr-1"/>{t}
+                                     </span>
+                                 ))}
+                             </span>
+
+                             <span className="text-[10px] text-slate-500 w-32 truncate flex items-center gap-1">
+                                 <span className={`w-2 h-2 rounded-full bg-[${getLaneColor(lane)}]`}></span>
+                                 {commit.author}
+                             </span>
+
+                             <span className="text-[10px] text-slate-400 w-24 text-right font-mono border-l border-slate-100 pl-2">
+                                 {new Date(commit.timestamp).toLocaleDateString()}
+                             </span>
                         </div>
                     </div>
                 )
@@ -893,6 +997,31 @@ export default function App() {
       });
   }
 
+  const handleCreateBranch = (commitId: string) => {
+      const name = prompt("Nome da nova Branch:", "feature/nova-tarefa");
+      if (!name) return;
+      
+      gitQueue.enqueue(`Criar Branch ${name}`, async () => {
+          await new Promise(r => setTimeout(r, 500));
+          setRepo(prev => ({
+              ...prev,
+              branches: [...prev.branches, { name, headCommitId: commitId }],
+              currentBranch: name
+          }));
+          alert(`Branch '${name}' criada e checkout realizado.`);
+      });
+  };
+
+  const handleCherryPick = (commitId: string) => {
+      if(!confirm(`Confirmar Cherry-Pick do commit ${commitId.substring(0,7)}?`)) return;
+      
+      gitQueue.enqueue(`Cherry-Pick ${commitId.substring(0,7)}`, async () => {
+           await new Promise(r => setTimeout(r, 800));
+           // Mock logic
+           alert("Cherry-pick aplicado com sucesso.\n(Alterações do commit foram aplicadas ao HEAD atual).");
+      });
+  };
+
   // --- Module 2: Smart Commit ---
 
   const openCommitDialog = () => {
@@ -1166,6 +1295,25 @@ export default function App() {
             <>
                 <button 
                     onClick={() => {
+                        handleCreateBranch(contextMenu.targetCommitId!);
+                        setContextMenu({ ...contextMenu, visible: false });
+                    }} 
+                    className="w-full text-left px-4 py-2 hover:bg-blue-600 hover:text-white flex items-center gap-2 text-slate-700 hover:text-white"
+                >
+                    <PlusCircle size={14} /> NexusVC -> Criar Branch aqui
+                </button>
+                <button 
+                    onClick={() => {
+                        handleCherryPick(contextMenu.targetCommitId!);
+                        setContextMenu({ ...contextMenu, visible: false });
+                    }} 
+                    className="w-full text-left px-4 py-2 hover:bg-blue-600 hover:text-white flex items-center gap-2 text-slate-700 hover:text-white"
+                >
+                    <GitPullRequest size={14} /> NexusVC -> Cherry-pick
+                </button>
+                <div className="h-px bg-slate-200 my-1"></div>
+                <button 
+                    onClick={() => {
                         handleHardReset(contextMenu.targetCommitId!);
                         setContextMenu({ ...contextMenu, visible: false });
                     }} 
@@ -1232,15 +1380,19 @@ export default function App() {
           </div>
       )}
 
-      {/* Top Bar */}
+      {/* Top Bar - System Integrated Look */}
       <div className="bg-slate-50 border-b border-slate-300 p-2 flex items-center gap-2 shadow-sm select-none">
         <div className="flex gap-1 mr-2">
             <img src="https://git-scm.com/images/logos/downloads/Git-Icon-1788C.png" className="w-6 h-6" alt="Git"/>
         </div>
         
-        <div className="flex-1 bg-white border border-slate-300 inset-shadow rounded flex items-center px-2 py-1 text-sm mr-4">
-          <FolderOpen size={16} className="text-yellow-500 mr-2" />
-          <span className="text-slate-600 font-medium">C:\Projetos\NexusVC\{repo.currentBranch}</span>
+        <div className="flex-1 flex items-center px-2 py-1 text-sm mr-4">
+          <span className="text-slate-700 font-bold flex items-center gap-2 bg-white border border-slate-300 px-3 py-1 rounded shadow-sm">
+              <HardDrive size={14} className="text-slate-500"/>
+              NexusVC System Repository
+              <span className="text-slate-300">|</span>
+              <span className="text-blue-600">{repo.currentBranch}</span>
+          </span>
         </div>
 
         <div className="flex items-center gap-2 border-r border-l border-slate-200 px-4 mx-2">
@@ -1566,20 +1718,29 @@ export default function App() {
                            <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-green-500"></div> feature</span>
                        </div>
                    </div>
-                   <div className="flex-1 overflow-auto p-4">
-                        <GitGraph 
-                            commits={repo.commits} 
-                            onRowContextMenu={(e, commitId) => {
-                                e.preventDefault();
-                                setContextMenu({
-                                    visible: true,
-                                    x: e.clientX,
-                                    y: e.clientY,
-                                    targetCommitId: commitId
-                                });
-                            }}
-                            onReset={(id) => handleHardReset(id)}
-                        />
+                   <div className="flex-1 overflow-auto p-4 bg-slate-100">
+                        <div className="border border-slate-300 bg-white shadow-sm rounded-sm overflow-hidden">
+                            <div className="bg-slate-200 px-2 py-1 flex text-[10px] font-bold text-slate-600 border-b border-slate-300 uppercase">
+                                <div className="w-40">Grafo</div>
+                                <div className="flex-1">Mensagem</div>
+                                <div className="w-32">Autor</div>
+                                <div className="w-24 text-right">Data</div>
+                            </div>
+                            <GitGraph 
+                                commits={repo.commits} 
+                                onRowContextMenu={(e, commitId) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setContextMenu({
+                                        visible: true,
+                                        x: e.clientX,
+                                        y: e.clientY,
+                                        targetCommitId: commitId
+                                    });
+                                }}
+                                onReset={(id) => handleHardReset(id)}
+                            />
+                        </div>
                    </div>
                </div>
            )}
