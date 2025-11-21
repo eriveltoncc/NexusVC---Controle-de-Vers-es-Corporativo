@@ -1,48 +1,48 @@
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   GitBranch, 
   GitCommit, 
   FileCode, 
   History, 
   Sparkles, 
-  UploadCloud,
-  DownloadCloud,
-  FolderOpen,
-  CheckCircle2,
-  AlertCircle,
-  Settings,
-  CheckSquare,
-  Square,
-  X,
-  BookOpen,
-  ArrowRight,
-  HelpCircle,
-  EyeOff,
-  GitMerge,
-  AlertTriangle,
-  RefreshCw,
-  Split,
-  ChevronDown,
-  Play,
-  Layers,
-  ShieldAlert,
-  FilePlus,
-  Globe,
-  Lock,
-  Server,
-  Link as LinkIcon,
-  Trash2,
-  Eye,
-  Bot,
-  Cpu,
-  MonitorPlay,
-  Code2,
-  MessageSquare,
-  Send,
-  BrainCircuit,
-  Search,
-  Undo2,
+  UploadCloud, 
+  DownloadCloud, 
+  FolderOpen, 
+  CheckCircle2, 
+  AlertCircle, 
+  Settings, 
+  CheckSquare, 
+  Square, 
+  X, 
+  BookOpen, 
+  ArrowRight, 
+  HelpCircle, 
+  EyeOff, 
+  GitMerge, 
+  AlertTriangle, 
+  RefreshCw, 
+  Split, 
+  ChevronDown, 
+  Play, 
+  Layers, 
+  ShieldAlert, 
+  FilePlus, 
+  Globe, 
+  Lock, 
+  Server, 
+  Link as LinkIcon, 
+  Trash2, 
+  Eye, 
+  Bot, 
+  Cpu, 
+  MonitorPlay, 
+  Code2, 
+  MessageSquare, 
+  Send, 
+  BrainCircuit, 
+  Search, 
+  Undo2, 
   FileDiff
 } from 'lucide-react';
 import { ICommit, IRepoState, FileStatus, IContextMenu, TaskType } from './types';
@@ -179,7 +179,7 @@ const ThreeWayMergeViewer = ({
     )
 }
 
-// --- New Component: Diff Viewer (TortoiseMerge Style) ---
+// --- New Component: Diff Viewer (Unified Diff Style) ---
 const DiffViewer = ({ 
     filename, 
     original, 
@@ -201,9 +201,49 @@ const DiffViewer = ({
         setLoading(false);
     }
 
-    const origLines = original.split('\n');
-    const modLines = modified.split('\n');
-    const maxLines = Math.max(origLines.length, modLines.length);
+    // Calculate Unified Diff using LCS (Longest Common Subsequence)
+    const diffChanges = useMemo(() => {
+        const oldLines = original.split('\n');
+        const newLines = modified.split('\n');
+        const N = oldLines.length;
+        const M = newLines.length;
+        
+        // DP Matrix for LCS
+        // Flattened array for performance
+        const dp = new Int32Array((N + 1) * (M + 1));
+        const getDp = (i: number, j: number) => dp[i * (M + 1) + j];
+        const setDp = (i: number, j: number, val: number) => dp[i * (M + 1) + j] = val;
+
+        for (let i = 1; i <= N; i++) {
+            for (let j = 1; j <= M; j++) {
+                if (oldLines[i - 1] === newLines[j - 1]) {
+                    setDp(i, j, getDp(i - 1, j - 1) + 1);
+                } else {
+                    setDp(i, j, Math.max(getDp(i - 1, j), getDp(i, j - 1)));
+                }
+            }
+        }
+
+        // Backtrack to find changes
+        let i = N, j = M;
+        const changes = [];
+        while (i > 0 || j > 0) {
+            if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
+                // Equal
+                changes.push({ type: ' ', content: oldLines[i - 1], oldLn: i, newLn: j });
+                i--; j--;
+            } else if (j > 0 && (i === 0 || getDp(i, j - 1) >= getDp(i - 1, j))) {
+                // Addition
+                changes.push({ type: '+', content: newLines[j - 1], newLn: j });
+                j--;
+            } else {
+                // Deletion
+                changes.push({ type: '-', content: oldLines[i - 1], oldLn: i });
+                i--;
+            }
+        }
+        return changes.reverse();
+    }, [original, modified]);
 
     return (
         <div className="flex flex-col h-full bg-white">
@@ -230,39 +270,45 @@ const DiffViewer = ({
                 </div>
             )}
 
-            <div className="flex-1 flex overflow-auto font-mono text-xs">
-                {/* Left Pane: Original */}
-                <div className="w-1/2 border-r border-slate-300 bg-[#fdfdfd]">
-                    <div className="bg-red-50 p-1 text-center text-[10px] font-bold text-red-800 sticky top-0 border-b border-red-100">BASE (Original)</div>
-                    <div className="p-2">
-                        {Array.from({length: maxLines}).map((_, i) => {
-                            const line = origLines[i] || '';
-                            const diff = line !== (modLines[i] || '');
+            <div className="flex-1 overflow-auto font-mono text-xs bg-slate-50 p-4">
+                 <div className="border border-slate-300 rounded bg-white overflow-hidden shadow-sm">
+                    <div className="bg-slate-100 border-b border-slate-300 px-3 py-2 text-slate-600 font-bold text-[10px] flex justify-between items-center">
+                        <span>git diff a/{filename} b/{filename}</span>
+                        <span className="text-[9px] bg-slate-200 px-1 rounded text-slate-500">Unified View</span>
+                    </div>
+                    <div className="divide-y divide-slate-50">
+                        {diffChanges.map((item, idx) => {
+                            let bg = 'bg-white';
+                            let text = 'text-slate-700';
+                            
+                            if (item.type === '+') { 
+                                bg = 'bg-green-50'; 
+                                text = 'text-green-700'; 
+                            }
+                            if (item.type === '-') { 
+                                bg = 'bg-red-50'; 
+                                text = 'text-red-700'; 
+                            }
+
                             return (
-                                <div key={i} className={`flex ${diff ? 'bg-red-100 text-red-900' : 'text-slate-600'} min-h-[1.4em]`}>
-                                    <span className="w-6 text-right pr-2 text-slate-400 select-none border-r border-slate-100 mr-1">{i+1}</span>
-                                    <span className="whitespace-pre">{line}</span>
+                                <div key={idx} className={`flex ${bg} ${text} hover:opacity-90`}>
+                                    {/* Line Numbers */}
+                                    <div className="w-8 text-right pr-1 select-none text-slate-400 border-r border-slate-200 mr-2 text-[10px] py-0.5 flex-shrink-0">
+                                        {item.oldLn || ' '}
+                                    </div>
+                                    <div className="w-8 text-right pr-1 select-none text-slate-400 border-r border-slate-200 mr-2 text-[10px] py-0.5 flex-shrink-0">
+                                        {item.newLn || ' '}
+                                    </div>
+                                    {/* Content */}
+                                    <div className="flex-1 whitespace-pre-wrap break-all py-0.5 flex">
+                                        <span className="w-4 select-none opacity-50 text-center inline-block font-bold">{item.type}</span>
+                                        <span>{item.content}</span>
+                                    </div>
                                 </div>
                             )
                         })}
                     </div>
-                </div>
-                {/* Right Pane: Modified */}
-                 <div className="w-1/2 bg-white">
-                    <div className="bg-green-50 p-1 text-center text-[10px] font-bold text-green-800 sticky top-0 border-b border-green-100">WORKING (Modificado)</div>
-                    <div className="p-2">
-                        {Array.from({length: maxLines}).map((_, i) => {
-                            const line = modLines[i] || '';
-                            const diff = line !== (origLines[i] || '');
-                            return (
-                                <div key={i} className={`flex ${diff ? 'bg-green-100 text-green-900' : 'text-slate-800'} min-h-[1.4em]`}>
-                                    <span className="w-6 text-right pr-2 text-slate-400 select-none border-r border-slate-100 mr-1">{i+1}</span>
-                                    <span className="whitespace-pre">{line}</span>
-                                </div>
-                            )
-                        })}
-                    </div>
-                </div>
+                 </div>
             </div>
         </div>
     )

@@ -1,5 +1,5 @@
 
-import { GoogleGenAI, Type, SchemaType } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 
 const getAiClient = () => {
   const apiKey = process.env.API_KEY;
@@ -17,7 +17,7 @@ export const generateSmartCommitMessage = async (diffSummary: string): Promise<s
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-lite', // Modelo rápido para baixa latência
+      model: 'gemini-flash-lite-latest', // Modelo rápido para baixa latência
       contents: `
         Atue como um Engenheiro de Software Sênior.
         Gere uma mensagem de commit padrão Conventional Commits (feat:, fix:, chore:) para as seguintes mudanças.
@@ -122,7 +122,19 @@ export const shapeProject = async (prompt: string, currentFiles: string[]): Prom
       config: {
         // Thinking Mode configuration
         thinkingConfig: { thinkingBudget: 32768 },
-        responseMimeType: "application/json" 
+        responseMimeType: "application/json",
+        responseSchema: {
+            type: Type.ARRAY,
+            items: {
+                type: Type.OBJECT,
+                properties: {
+                    filename: { type: Type.STRING },
+                    content: { type: Type.STRING },
+                    reasoning: { type: Type.STRING }
+                },
+                required: ["filename", "content", "reasoning"]
+            }
+        }
       }
     });
 
@@ -140,7 +152,7 @@ export const explainChanges = async (filename: string, original: string, modifie
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-lite',
+      model: 'gemini-flash-lite-latest',
       contents: `
         Atue como um revisor de código (Code Reviewer).
         Explique de forma concisa as alterações feitas no arquivo "${filename}".
