@@ -43,11 +43,16 @@ import {
   BrainCircuit, 
   Search, 
   Undo2, 
-  FileDiff
+  FileDiff,
+  RotateCcw,
+  Copy,
+  MoreHorizontal,
+  Database
 } from 'lucide-react';
 import { ICommit, IRepoState, FileStatus, IContextMenu, TaskType } from './types';
 import { generateSmartCommitMessage, askGitMentorWithSearch, shapeProject, IAiGeneratedFile, streamChatResponse, explainChanges } from './services/geminiService';
 import { gitQueue } from './services/gitQueue';
+import { NexusDB } from './services/sqliteService';
 
 // --- Initial Mock Data (Enriched for Graph) ---
 const INITIAL_FILES = {
@@ -102,9 +107,7 @@ const INITIAL_REPO_STATE: IRepoState = {
     { name: 'master', headCommitId: 'c9d8e7f', remoteHeadCommitId: 'c9d8e7f' },
     { name: 'feature/ui-refresh', headCommitId: INITIAL_COMMIT_ID, remoteHeadCommitId: INITIAL_COMMIT_ID }
   ],
-  remotes: [
-      { name: 'origin', url: 'https://github.com/nexusvc/core.git' }
-  ],
+  remotes: [], // Will be loaded from DB
   github: {
     connected: false,
     repoUrl: '',
@@ -315,10 +318,17 @@ const DiffViewer = ({
 }
 
 // --- Module 3: Graph Visualization ---
-const GitGraph = ({ commits }: { commits: ICommit[] }) => {
-    // A simplified graph renderer for the "Engineering Manual" look
+const GitGraph = ({ 
+    commits, 
+    onRowContextMenu,
+    onReset 
+}: { 
+    commits: ICommit[], 
+    onRowContextMenu: (e: React.MouseEvent, commitId: string) => void,
+    onReset: (id: string) => void
+}) => {
     return (
-        <div className="relative w-full">
+        <div className="relative w-full pb-12">
             {commits.map((commit, idx) => {
                 const isMerge = !!commit.secondaryParent;
                 const lane = commit.lane || 0;
@@ -331,10 +341,10 @@ const GitGraph = ({ commits }: { commits: ICommit[] }) => {
                     const childLane = commits[idx - 1].lane || 0;
                      // If same lane
                     if (childLane === lane) {
-                         lines.push(<line key="straight" x1={xPos} y1={0} x2={xPos} y2={24} stroke="#94a3b8" strokeWidth="2" />);
+                         lines.push(<line key="straight" x1={xPos} y1={0} x2={xPos} y2={32} stroke="#94a3b8" strokeWidth="2" />);
                     } else {
                         // Curved line from merge
-                        lines.push(<path key="merge" d={`M${20 + childLane * 20},0 C${20 + childLane * 20},12 ${xPos},12 ${xPos},24`} fill="none" stroke="#94a3b8" strokeWidth="2" />);
+                        lines.push(<path key="merge" d={`M${20 + childLane * 20},0 C${20 + childLane * 20},16 ${xPos},16 ${xPos},32`} fill="none" stroke="#94a3b8" strokeWidth="2" />);
                     }
                 }
 
@@ -342,18 +352,40 @@ const GitGraph = ({ commits }: { commits: ICommit[] }) => {
                 const nodeColor = lane === 0 ? '#3b82f6' : '#10b981'; // Blue for master, Green for feature
 
                 return (
-                    <div key={commit.id} className="flex h-8 items-center hover:bg-slate-50 group">
+                    <div 
+                        key={commit.id} 
+                        className="flex h-8 items-center hover:bg-slate-100 group transition-colors px-2 rounded cursor-pointer relative pr-20"
+                        onContextMenu={(e) => onRowContextMenu(e, commit.id)}
+                    >
                         <div className="w-24 flex-shrink-0 relative h-full">
                             <svg className="absolute inset-0 w-full h-full pointer-events-none">
                                 {lines}
                                 <circle cx={xPos} cy={16} r={4} fill={nodeColor} stroke="white" strokeWidth="2" />
                             </svg>
                         </div>
-                        <div className="flex-1 flex items-center gap-4 border-b border-slate-100 h-full pr-4 text-xs">
-                             <span className="font-mono text-slate-400 w-16">{commit.id.substring(0, 7)}</span>
+                        <div className="flex-1 flex items-center gap-4 border-b border-slate-100 h-full pr-4 text-xs relative">
+                             <span className="font-mono text-slate-400 w-16 bg-slate-50 px-1 rounded text-center">{commit.id.substring(0, 7)}</span>
                              <span className="flex-1 font-medium text-slate-700 truncate group-hover:text-blue-600 transition-colors">{commit.message}</span>
-                             <span className="text-slate-500 w-24 truncate">{commit.author}</span>
+                             <span className="text-slate-500 w-24 truncate flex items-center gap-1"><GitBranch size={10}/> {commit.author}</span>
                              <span className="text-slate-400 w-20 text-right">{new Date(commit.timestamp).toLocaleDateString()}</span>
+                        </div>
+
+                         {/* Actions Overlay (Visible on Group Hover) */}
+                         <div className="absolute right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-100 pl-2">
+                             <button 
+                                onClick={(e) => { e.stopPropagation(); onReset(commit.id); }}
+                                className="p-1 hover:bg-red-100 text-slate-400 hover:text-red-600 rounded transition-colors"
+                                title="NexusVC: Resetar para esta revisão"
+                             >
+                                <RotateCcw size={14} />
+                            </button>
+                             <button 
+                                onClick={(e) => { e.stopPropagation(); onRowContextMenu(e, commit.id); }}
+                                className="p-1 hover:bg-blue-100 text-slate-400 hover:text-blue-600 rounded transition-colors"
+                                title="Mais Opções"
+                             >
+                                <MoreHorizontal size={14} />
+                            </button>
                         </div>
                     </div>
                 )
@@ -502,7 +534,7 @@ export default function App() {
   // Sync State
   const [useRebase, setUseRebase] = useState(true);
   
-  // Tortoise Commit Dialog
+  // Commit Dialog
   const [commitMessage, setCommitMessage] = useState('');
   const [filesToCommit, setFilesToCommit] = useState<Record<string, boolean>>({});
   const [isAmend, setIsAmend] = useState(false);
@@ -529,6 +561,20 @@ export default function App() {
   const [taskType, setTaskType] = useState<TaskType>('feature');
   const [taskName, setTaskName] = useState('');
 
+  // --- Initialization: Connect to Embedded DB ---
+  useEffect(() => {
+      NexusDB.connect();
+      // Load Remotes from SQLite (Simulated)
+      const cachedRemotes = NexusDB.remotes.getAll();
+      if (cachedRemotes.length > 0) {
+          setRepo(prev => ({
+              ...prev,
+              remotes: cachedRemotes.map(r => ({ name: r.name, url: r.url })),
+              github: { ...prev.github, connected: true, repoUrl: cachedRemotes[0]?.url }
+          }));
+      }
+  }, []);
+
   // --- Queue Listener ---
   useEffect(() => {
       gitQueue.setStatusListener((busy, task) => {
@@ -537,28 +583,23 @@ export default function App() {
       });
   }, []);
 
-  // --- Logic: File Watcher & Porcelain Simulator ---
+  // --- Logic: File Watcher & Porcelain Simulator (Updates Cache) ---
   useEffect(() => {
     // 1. Simulator: "git status --porcelain -z"
-    // Generates a raw string representing file statuses, delimited by null bytes.
     const simulateGitStatusPorcelainZ = (): string => {
       const buffer: string[] = [];
       const allKeys = new Set([...Object.keys(repo.files), ...Object.keys(repo.originalFiles)]);
       
       allKeys.forEach(file => {
-          // Check ignores
           const isIgnored = repo.gitIgnore.some(p => p.startsWith('*') ? file.endsWith(p.slice(1)) : file === p);
-          
           const inWork = repo.files[file];
           const inHead = repo.originalFiles[file];
           
-          // Status determination logic
           if (repo.mergeState.conflicts.includes(file)) {
               buffer.push(`UU ${file}`);
           } else if (inWork !== undefined && inHead === undefined) {
               if (!isIgnored) buffer.push(`?? ${file}`);
           } else if (inWork === undefined && inHead !== undefined) {
-               // Note: In this mock, missing from repo.files usually means deleted
               buffer.push(` D ${file}`);
           } else if (inWork !== inHead) {
               buffer.push(` M ${file}`);
@@ -568,24 +609,19 @@ export default function App() {
       return buffer.join('\0');
     };
 
-    // 2. Parser: Null Byte Handling
-    // Parses the raw string back into a structured map
     const parseStatus = (raw: string): Record<string, FileStatus> => {
         const result: Record<string, FileStatus> = {};
         if (!raw) return result;
         
-        // Split by Null Byte
         const tokens = raw.split('\0');
         tokens.forEach(token => {
             if (token.length < 3) return;
-            // Porcelain format: XY PATH
             const code = token.substring(0, 2);
             const filename = token.substring(3);
-            
             switch(code) {
                 case '??': result[filename] = FileStatus.Untracked; break;
                 case ' M': result[filename] = FileStatus.Modified; break;
-                case ' D': result[filename] = FileStatus.Modified; break; // Simplification for UI
+                case ' D': result[filename] = FileStatus.Modified; break; 
                 case 'UU': result[filename] = FileStatus.Conflicted; break;
             }
         });
@@ -595,10 +631,15 @@ export default function App() {
     const rawOutput = simulateGitStatusPorcelainZ();
     const newStatuses = parseStatus(rawOutput);
 
-    // 3. Update State (Cache)
+    // 3. Update State & DB Cache
     setRepo(prev => {
-        // Prevent infinite loops with primitive check
         if (JSON.stringify(prev.fileStatuses) === JSON.stringify(newStatuses)) return prev;
+        
+        // Update SQLite Cache for Overlay Icons (simulating Tortoise behavior)
+        Object.keys(newStatuses).forEach(file => {
+             NexusDB.cache.upsert(file, newStatuses[file]);
+        });
+
         return { ...prev, fileStatuses: newStatuses };
     });
 
@@ -607,17 +648,21 @@ export default function App() {
 
   // --- Logic: Status Accessor ---
   const getFileStatus = (filename: string): FileStatus => {
-    // Priority 1: Check the cached status from the Watcher
+    // Priority 1: Check Memory Cache
     if (repo.fileStatuses[filename]) return repo.fileStatuses[filename];
 
-    // Priority 2: Check ignored (Client-side, since porcelain might omit them)
+    // Priority 1.5: Check Embedded DB Cache (Simulating TSVNCache)
+    // Note: In a real React app this would be async, but we cheat with LocalStorage for the demo
+    const cachedStatus = NexusDB.cache.get(filename);
+    if (cachedStatus) return cachedStatus as FileStatus;
+
+    // Priority 2: Check ignored
     const isIgnored = repo.gitIgnore.some(pattern => {
       if (pattern.startsWith('*')) return filename.endsWith(pattern.slice(1));
       return filename === pattern;
     });
     if (isIgnored) return FileStatus.Ignored;
 
-    // Default
     return FileStatus.Unmodified;
   };
 
@@ -661,21 +706,18 @@ export default function App() {
           const currentBranchObj = repo.branches.find(b => b.name === repo.currentBranch);
           if (!currentBranchObj) throw new Error("Head detached");
 
-          // 1. Check if there is anything to push
           if (currentBranchObj.headCommitId === currentBranchObj.remoteHeadCommitId) {
               alert("Tudo atualizado (Everything up-to-date)");
               return;
           }
 
           try {
-              // 2. Simulation: Check for non-fast-forward
               const isNonFastForward = Math.random() < 0.1; 
 
               if (isNonFastForward) {
                   throw new Error("rejected - non-fast-forward");
               }
 
-              // 3. Success
               setRepo(prev => {
                   const updatedBranches = prev.branches.map(b => 
                       b.name === prev.currentBranch 
@@ -691,7 +733,6 @@ export default function App() {
               alert(`[Sucesso] Enviado ${repo.currentBranch} para ${remote.url}\nRemote Ref atualizado para ${currentBranchObj.headCommitId?.substring(0,7)}`);
 
           } catch (error: any) {
-              // 4. Handle Non-Fast-Forward Error
               if (error.message.includes('non-fast-forward')) {
                   const shouldPull = confirm(
                       `[Erro Git] Push rejeitado: non-fast-forward.\n\n` +
@@ -718,14 +759,6 @@ export default function App() {
           return;
       }
 
-      const isSsh = url.startsWith('git@');
-      const isHttps = url.startsWith('https://');
-
-      if (!isSsh && !isHttps) {
-          alert("Formato de URL inválido. Deve começar com 'https://' ou 'git@'.");
-          return;
-      }
-
       gitQueue.enqueue(`Configurando Remote '${name}'`, async () => {
           await new Promise(r => setTimeout(r, 1500)); 
           
@@ -742,6 +775,9 @@ export default function App() {
                   newRemotes.push({ name, url });
               }
               
+              // Persist to SQLite
+              NexusDB.remotes.add(name, url);
+
               return {
                 ...prev,
                 remotes: newRemotes,
@@ -753,7 +789,7 @@ export default function App() {
               };
           });
 
-          alert(`[Sucesso] Remote '${name}' configurado.`);
+          alert(`[Sucesso] Remote '${name}' configurado e salvo no banco de dados local.`);
           setRemoteNameInput('');
           setGithubUrlInput('');
       });
@@ -768,11 +804,13 @@ export default function App() {
             ...prev,
             remotes: prev.remotes.filter(r => r.name !== name)
         }));
+        // Remove from SQLite
+        NexusDB.remotes.remove(name);
     });
   };
 
   const handleRevert = (filename: string) => {
-      if (!window.confirm(`TortoiseGit: Reverter alterações em '${filename}'?\n\nIsso descartará todas as mudanças não commitadas.`)) return;
+      if (!window.confirm(`NexusVC: Reverter alterações em '${filename}'?\n\nIsso descartará todas as mudanças não commitadas.`)) return;
       
       const originalContent = repo.originalFiles[filename];
       if (originalContent !== undefined) {
@@ -780,8 +818,80 @@ export default function App() {
               ...prev,
               files: { ...prev.files, [filename]: originalContent }
           }));
+          // Update cache
+          NexusDB.cache.upsert(filename, FileStatus.Unmodified);
       }
   };
+
+  const handleRevertCommit = (commitId: string) => {
+    const commit = repo.commits.find(c => c.id === commitId);
+    if (!commit) return;
+
+    if(!confirm(`Criar um novo commit revertendo as alterações de "${commit.message}"?`)) return;
+
+    gitQueue.enqueue(`Revert commit ${commitId.substring(0,7)}`, async () => {
+         await new Promise(r => setTimeout(r, 800));
+         const newCommitId = Math.random().toString(36).substr(2, 7);
+         const currentBranchObj = repo.branches.find(b => b.name === repo.currentBranch);
+         
+         const newCommit: ICommit = {
+            id: newCommitId,
+            message: `Revert "${commit.message}"`,
+            author: repo.github.username || 'System',
+            timestamp: Date.now(),
+            changes: {}, 
+            parent: currentBranchObj?.headCommitId || null,
+            lane: commit.lane 
+        };
+
+        setRepo(prev => {
+             const updatedBranches = prev.branches.map(b => 
+                b.name === prev.currentBranch ? { ...b, headCommitId: newCommitId } : b
+            );
+            return {
+                ...prev,
+                commits: [newCommit, ...prev.commits],
+                branches: updatedBranches
+            }
+        });
+        alert("Commit de reversão criado com sucesso.");
+    });
+  }
+
+  const handleHardReset = (targetCommitId: string) => {
+      if (!window.confirm(
+          `ATENÇÃO: Resetar para esta revisão?\n\n` +
+          `Isso executará um 'git reset --hard'.\n` +
+          `1. O HEAD será movido para ${targetCommitId.substring(0,7)}.\n` +
+          `2. Todos os commits posteriores serão perdidos.\n` +
+          `3. Todas as alterações locais não salvas serão descartadas.\n\n` +
+          `Deseja continuar?`
+      )) return;
+
+      gitQueue.enqueue(`Reset Hard -> ${targetCommitId.substring(0,7)}`, async () => {
+          await new Promise(r => setTimeout(r, 1000));
+          
+          setRepo(prev => {
+              const commitIdx = prev.commits.findIndex(c => c.id === targetCommitId);
+              if (commitIdx === -1) return prev;
+
+              const newCommits = prev.commits.slice(commitIdx);
+              
+              const updatedBranches = prev.branches.map(b => 
+                  b.name === prev.currentBranch ? { ...b, headCommitId: targetCommitId } : b
+              );
+
+              return {
+                  ...prev,
+                  commits: newCommits,
+                  branches: updatedBranches,
+                  files: { ...prev.originalFiles }, 
+              };
+          });
+          alert(`Reset Hard concluído com sucesso.`);
+          setViewMode('explorer');
+      });
+  }
 
   // --- Module 2: Smart Commit ---
 
@@ -821,7 +931,6 @@ export default function App() {
     gitQueue.enqueue('Commitando Alterações', async () => {
          await new Promise(r => setTimeout(r, 800));
         
-        // Get current HEAD info for Amend
         const currentBranchObj = repo.branches.find(b => b.name === repo.currentBranch);
         const currentHeadId = currentBranchObj?.headCommitId;
         const currentHeadCommit = repo.commits.find(c => c.id === currentHeadId);
@@ -833,12 +942,10 @@ export default function App() {
 
         const newCommitId = Math.random().toString(36).substr(2, 7);
         
-        // Determine Parent(s)
         let parentId = currentHeadId || null;
         let secondaryParentId = repo.mergeState.isMerging ? repo.branches.find(b => b.name === repo.mergeState.sourceBranch)?.headCommitId : null;
         let lane = repo.currentBranch === 'master' ? 0 : 1;
 
-        // Amend Logic: Inherit parent from current HEAD, replace HEAD
         if (isAmend && currentHeadCommit) {
             parentId = currentHeadCommit.parent;
             secondaryParentId = currentHeadCommit.secondaryParent || null;
@@ -861,11 +968,13 @@ export default function App() {
                 b.name === prev.currentBranch ? { ...b, headCommitId: newCommitId } : b
             );
             
-            // If amending, remove the old HEAD from history
             let newCommitsList = prev.commits;
             if (isAmend && currentHeadId) {
                 newCommitsList = newCommitsList.filter(c => c.id !== currentHeadId);
             }
+
+            // Update Cache after commit (files are now unmodified relative to HEAD)
+            filesSelected.forEach(f => NexusDB.cache.upsert(f, FileStatus.Unmodified));
 
             return {
                 ...prev,
@@ -1012,13 +1121,21 @@ export default function App() {
         className="fixed bg-white border border-slate-400 shadow-[4px_4px_0px_rgba(0,0,0,0.2)] py-1 w-64 z-50 text-sm text-slate-800 font-sans"
         style={{ top: contextMenu.y, left: contextMenu.x }}
       >
+        {/* Header for File Context */}
         {contextMenu.targetFile && (
              <div className="px-4 py-2 font-bold border-b border-slate-200 bg-slate-50 text-slate-600 truncate flex items-center gap-2">
                <FileCode size={14} /> {contextMenu.targetFile}
              </div>
         )}
+
+        {/* Header for Commit Context */}
+        {contextMenu.targetCommitId && (
+             <div className="px-4 py-2 font-bold border-b border-slate-200 bg-slate-50 text-slate-600 truncate flex items-center gap-2">
+               <GitCommit size={14} /> Commit {contextMenu.targetCommitId.substring(0,7)}
+             </div>
+        )}
         
-        {/* TortoiseGit Style Actions */}
+        {/* NexusVC (formerly TortoiseGit) Actions for File */}
         {contextMenu.targetFile && isModified && (
             <>
                 <button 
@@ -1029,7 +1146,7 @@ export default function App() {
                     }} 
                     className="w-full text-left px-4 py-2 hover:bg-blue-600 hover:text-white flex items-center gap-2 font-bold"
                 >
-                    <FileDiff size={14} /> TortoiseGit -> Diff
+                    <FileDiff size={14} /> NexusVC -> Diff
                 </button>
                 <button 
                     onClick={() => {
@@ -1038,22 +1155,61 @@ export default function App() {
                     }} 
                     className="w-full text-left px-4 py-2 hover:bg-blue-600 hover:text-white flex items-center gap-2 text-red-600 hover:text-white"
                 >
-                    <Undo2 size={14} /> TortoiseGit -> Revert...
+                    <Undo2 size={14} /> NexusVC -> Revert...
                 </button>
                 <div className="h-px bg-slate-200 my-1"></div>
             </>
         )}
 
-        <button onClick={() => openCommitDialog()} className="w-full text-left px-4 py-2 hover:bg-blue-600 hover:text-white flex items-center gap-2">
-            <GitCommit size={14} /> Git Commit -> {repo.currentBranch}
-        </button>
-        <div className="h-px bg-slate-200 my-1"></div>
-        <button onClick={() => handlePush()} className="w-full text-left px-4 py-2 hover:bg-blue-600 hover:text-white flex items-center gap-2">
-            <UploadCloud size={14} /> TortoiseGit -> Push
-        </button>
-        <button onClick={() => handlePull()} className="w-full text-left px-4 py-2 hover:bg-blue-600 hover:text-white flex items-center gap-2">
-            <DownloadCloud size={14} /> TortoiseGit -> Pull
-        </button>
+        {/* NexusVC Actions for Commit (Log View) */}
+        {contextMenu.targetCommitId && (
+            <>
+                <button 
+                    onClick={() => {
+                        handleHardReset(contextMenu.targetCommitId!);
+                        setContextMenu({ ...contextMenu, visible: false });
+                    }} 
+                    className="w-full text-left px-4 py-2 hover:bg-blue-600 hover:text-white flex items-center gap-2 text-red-600 font-bold hover:text-white"
+                >
+                    <RotateCcw size={14} /> NexusVC -> Resetar para esta revisão
+                </button>
+                 <button 
+                    onClick={() => {
+                        handleRevertCommit(contextMenu.targetCommitId!);
+                        setContextMenu({ ...contextMenu, visible: false });
+                    }} 
+                    className="w-full text-left px-4 py-2 hover:bg-blue-600 hover:text-white flex items-center gap-2 text-slate-700 hover:text-white"
+                >
+                    <Undo2 size={14} /> NexusVC -> Reverter alterações
+                </button>
+                 <button 
+                    onClick={() => {
+                        navigator.clipboard.writeText(contextMenu.targetCommitId!);
+                        setContextMenu({ ...contextMenu, visible: false });
+                    }} 
+                    className="w-full text-left px-4 py-2 hover:bg-blue-600 hover:text-white flex items-center gap-2 text-slate-600 hover:text-white"
+                >
+                    <Copy size={14} /> Copiar Hash
+                </button>
+                <div className="h-px bg-slate-200 my-1"></div>
+            </>
+        )}
+
+        {/* Standard Git Actions (only show if not commit context or maybe allow commit message edit later) */}
+        {!contextMenu.targetCommitId && (
+            <>
+                <button onClick={() => openCommitDialog()} className="w-full text-left px-4 py-2 hover:bg-blue-600 hover:text-white flex items-center gap-2">
+                    <GitCommit size={14} /> Git Commit -> {repo.currentBranch}
+                </button>
+                <div className="h-px bg-slate-200 my-1"></div>
+                <button onClick={() => handlePush()} className="w-full text-left px-4 py-2 hover:bg-blue-600 hover:text-white flex items-center gap-2">
+                    <UploadCloud size={14} /> NexusVC -> Push
+                </button>
+                <button onClick={() => handlePull()} className="w-full text-left px-4 py-2 hover:bg-blue-600 hover:text-white flex items-center gap-2">
+                    <DownloadCloud size={14} /> NexusVC -> Pull
+                </button>
+            </>
+        )}
       </div>
     );
   };
@@ -1411,7 +1567,19 @@ export default function App() {
                        </div>
                    </div>
                    <div className="flex-1 overflow-auto p-4">
-                        <GitGraph commits={repo.commits} />
+                        <GitGraph 
+                            commits={repo.commits} 
+                            onRowContextMenu={(e, commitId) => {
+                                e.preventDefault();
+                                setContextMenu({
+                                    visible: true,
+                                    x: e.clientX,
+                                    y: e.clientY,
+                                    targetCommitId: commitId
+                                });
+                            }}
+                            onReset={(id) => handleHardReset(id)}
+                        />
                    </div>
                </div>
            )}
@@ -1420,8 +1588,30 @@ export default function App() {
            {viewMode === 'settings' && (
                 <div className="p-8 max-w-xl mx-auto">
                     <div className="flex items-center justify-between mb-6">
-                        <h2 className="font-bold text-xl flex items-center gap-2 text-slate-800"><Settings size={24}/> Configuração de Remotes</h2>
+                        <h2 className="font-bold text-xl flex items-center gap-2 text-slate-800"><Settings size={24}/> Configurações do NexusVC</h2>
                         <button onClick={() => setViewMode('explorer')} className="text-slate-400 hover:text-slate-600"><X/></button>
+                    </div>
+
+                    {/* Embedded DB Stats */}
+                     <div className="bg-amber-50 p-4 rounded border border-amber-200 mb-6">
+                        <h3 className="text-sm font-bold text-amber-800 flex items-center gap-2 mb-2">
+                            <Database size={16} /> Banco de Dados Local (SQLite Embedded)
+                        </h3>
+                        <p className="text-xs text-amber-700 mb-3">
+                            Usado para cache de ícones de status e histórico de repositórios (similar ao TortoiseGit Cache).
+                        </p>
+                        <div className="flex justify-between items-center text-xs text-slate-600 bg-white p-2 rounded border border-amber-100">
+                            <span>Entradas em Cache: <strong>{NexusDB.cache.count()}</strong></span>
+                            <button 
+                                onClick={() => { 
+                                    NexusDB.cache.clear(); 
+                                    alert('Cache de ícones limpo.'); 
+                                }} 
+                                className="text-red-600 hover:underline"
+                            >
+                                Limpar Cache
+                            </button>
+                        </div>
                     </div>
 
                     {/* List of Remotes */}
@@ -1622,6 +1812,7 @@ export default function App() {
          </div>
          <div className="flex gap-2 items-center">
             <span className="flex items-center gap-1" title="File Watcher Ativo"><Eye size={10} className="animate-pulse"/> Watcher</span>
+            <span className="flex items-center gap-1" title="DB Local"><Database size={10}/> SQL: {NexusDB.cache.count()} recs</span>
             <span>UTF-8</span>
             <span>LF</span>
          </div>

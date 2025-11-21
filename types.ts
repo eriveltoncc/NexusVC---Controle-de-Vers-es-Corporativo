@@ -70,6 +70,7 @@ export interface IContextMenu {
   x: number;
   y: number;
   targetFile?: string;
+  targetCommitId?: string; // Added for Log View Context Menu
 }
 
 export type TaskType = 'feature' | 'bugfix' | 'hotfix' | 'release';
