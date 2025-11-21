@@ -53,7 +53,8 @@ import {
   CornerDownRight,
   Monitor,
   Tag,
-  HardDrive
+  HardDrive,
+  Wrench
 } from 'lucide-react';
 import { ICommit, IRepoState, FileStatus, IContextMenu, TaskType } from './types';
 import { generateSmartCommitMessage, askGitMentorWithSearch, shapeProject, IAiGeneratedFile, streamChatResponse, explainChanges } from './services/geminiService';
@@ -538,10 +539,16 @@ const LivePreview = ({ files }: { files: Record<string, string> }) => {
 }
 
 // --- New Component: Chatbot ---
-const Chatbot = () => {
+const Chatbot = ({ 
+    files, 
+    onUpdateFile 
+}: { 
+    files: Record<string, string>, 
+    onUpdateFile: (filename: string, content: string) => void 
+}) => {
     const [isOpen, setIsOpen] = useState(false);
-    const [messages, setMessages] = useState<{role: string, text: string}[]>([
-        { role: 'model', text: 'Olá! Sou o assistente virtual NexusVC. Posso ajudar com comandos Git ou dúvidas sobre o projeto.' }
+    const [messages, setMessages] = useState<{role: string, text: string, type?: 'text' | 'tool'}[]>([
+        { role: 'model', text: 'Olá! Sou o assistente virtual NexusVC. Posso ajudar com comandos Git ou editar seus arquivos diretamente. O que deseja fazer?', type: 'text' }
     ]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
@@ -550,31 +557,67 @@ const Chatbot = () => {
         if (!input.trim()) return;
         const userMsg = input;
         setInput('');
-        setMessages(prev => [...prev, { role: 'user', text: userMsg }]);
+        setMessages(prev => [...prev, { role: 'user', text: userMsg, type: 'text' }]);
         setIsLoading(true);
 
         try {
-            // Prepare history for API
-            const history = messages.map(m => ({
+            // Prepare history for API (Text only for context)
+            const history = messages.filter(m => m.type !== 'tool').map(m => ({
                 role: m.role === 'model' ? 'model' : 'user',
                 parts: [{ text: m.text }]
             }));
 
-            const stream = streamChatResponse(history, userMsg);
+            const stream = streamChatResponse(history, userMsg, files);
             
-            setMessages(prev => [...prev, { role: 'model', text: '' }]);
+            // Add a placeholder for the model response
+            setMessages(prev => [...prev, { role: 'model', text: '', type: 'text' }]);
+            
             let fullResponse = "";
+            let hasToolCall = false;
 
             for await (const chunk of stream) {
-                fullResponse += chunk;
-                setMessages(prev => {
-                    const newArr = [...prev];
-                    newArr[newArr.length - 1].text = fullResponse;
-                    return newArr;
-                });
+                if (chunk.toolCall) {
+                    hasToolCall = true;
+                    if (chunk.toolCall.name === 'update_file') {
+                        // Execute Tool
+                        const { filename, content, reasoning } = chunk.toolCall.args;
+                        onUpdateFile(filename, content);
+                        
+                        // Update UI to show action
+                        setMessages(prev => {
+                            const newArr = [...prev];
+                            // Remove empty thinking bubble if exists
+                            if (newArr[newArr.length - 1].text === '') newArr.pop();
+                            
+                            // Add Tool Execution Message
+                            newArr.push({ 
+                                role: 'model', 
+                                text: `✅ Alteração aplicada em '${filename}': ${reasoning}`, 
+                                type: 'tool' 
+                            });
+                            return newArr;
+                        });
+                    }
+                }
+                
+                if (chunk.text) {
+                    fullResponse += chunk.text;
+                    setMessages(prev => {
+                        const newArr = [...prev];
+                        // Update the last message if it's a text message
+                        if (newArr[newArr.length - 1].type === 'text') {
+                             newArr[newArr.length - 1].text = fullResponse;
+                        } else if (!hasToolCall) {
+                             // Recovery if we popped the text bubble
+                             newArr.push({ role: 'model', text: fullResponse, type: 'text' });
+                        }
+                        return newArr;
+                    });
+                }
             }
         } catch (e) {
-            setMessages(prev => [...prev, { role: 'model', text: 'Desculpe, ocorreu um erro na comunicação.' }]);
+            console.error(e);
+            setMessages(prev => [...prev, { role: 'model', text: 'Desculpe, ocorreu um erro na comunicação.', type: 'text' }]);
         } finally {
             setIsLoading(false);
         }
@@ -593,31 +636,44 @@ const Chatbot = () => {
     }
 
     return (
-        <div className="fixed bottom-8 right-8 w-80 h-96 bg-white rounded-xl shadow-2xl border border-slate-200 z-50 flex flex-col overflow-hidden">
-            <div className="bg-slate-800 p-3 text-white flex justify-between items-center">
-                <span className="font-bold flex items-center gap-2"><Bot size={18}/> Nexus Chat</span>
+        <div className="fixed bottom-8 right-8 w-96 h-[500px] bg-white rounded-xl shadow-2xl border border-slate-200 z-50 flex flex-col overflow-hidden">
+            <div className="bg-slate-800 p-3 text-white flex justify-between items-center shadow-md">
+                <div className="flex flex-col">
+                    <span className="font-bold flex items-center gap-2"><Bot size={18}/> Nexus Agent</span>
+                    <span className="text-[10px] text-slate-300 flex items-center gap-1"><Wrench size={10}/> Acesso de Escrita Ativo</span>
+                </div>
                 <button onClick={() => setIsOpen(false)} className="hover:bg-slate-700 p-1 rounded"><X size={16}/></button>
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50">
                 {messages.map((m, i) => (
                     <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                        <div className={`max-w-[80%] p-2 rounded-lg text-sm ${m.role === 'user' ? 'bg-blue-500 text-white rounded-tr-none' : 'bg-white border border-slate-200 text-slate-800 rounded-tl-none'}`}>
-                            {m.text}
-                        </div>
+                        {m.type === 'tool' ? (
+                            <div className="max-w-[90%] p-2 rounded bg-green-50 border border-green-200 text-green-800 text-xs flex items-center gap-2">
+                                <Wrench size={14}/> {m.text}
+                            </div>
+                        ) : (
+                            <div className={`max-w-[85%] p-3 rounded-lg text-sm shadow-sm ${
+                                m.role === 'user' 
+                                ? 'bg-blue-600 text-white rounded-tr-none' 
+                                : 'bg-white border border-slate-200 text-slate-800 rounded-tl-none'
+                            }`}>
+                                {m.text}
+                            </div>
+                        )}
                     </div>
                 ))}
-                {isLoading && <div className="text-xs text-slate-400 ml-2 animate-pulse">Digitando...</div>}
+                {isLoading && <div className="text-xs text-slate-400 ml-2 animate-pulse flex items-center gap-1"><Sparkles size={10}/> Processando...</div>}
             </div>
-            <div className="p-2 border-t border-slate-200 flex gap-2 bg-white">
+            <div className="p-3 border-t border-slate-200 flex gap-2 bg-white">
                 <input 
-                    className="flex-1 border border-slate-300 rounded px-2 text-sm outline-none focus:border-blue-500"
+                    className="flex-1 border border-slate-300 rounded px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
                     value={input}
                     onChange={e => setInput(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && handleSend()}
-                    placeholder="Digite sua pergunta..."
+                    placeholder="Ex: Adicione um botão vermelho no index.html"
                 />
-                <button onClick={handleSend} disabled={isLoading} className="p-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50">
-                    <Send size={16} />
+                <button onClick={handleSend} disabled={isLoading} className="p-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 shadow-sm transition-colors">
+                    <Send size={18} />
                 </button>
             </div>
         </div>
@@ -1365,7 +1421,17 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen bg-slate-100 font-sans text-slate-900" onContextMenu={(e) => handleRightClick(e)}>
       <ContextMenu />
-      <Chatbot />
+      <Chatbot 
+        files={repo.files} 
+        onUpdateFile={(filename, content) => {
+            setRepo(prev => ({
+                ...prev,
+                files: { ...prev.files, [filename]: content }
+            }));
+            // Also trigger a cache update to show modified icon immediately
+            NexusDB.cache.upsert(filename, FileStatus.Modified);
+        }} 
+      />
       
       {/* Global Process Overlay */}
       {isBusy && (

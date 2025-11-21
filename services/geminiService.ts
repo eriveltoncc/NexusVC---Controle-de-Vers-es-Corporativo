@@ -1,5 +1,5 @@
 
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, FunctionDeclaration, Tool } from "@google/genai";
 
 const getAiClient = () => {
   const apiKey = process.env.API_KEY;
@@ -8,6 +8,32 @@ const getAiClient = () => {
     return null;
   }
   return new GoogleGenAI({ apiKey });
+};
+
+// Definição da ferramenta de edição de arquivos
+const updateFileTool: Tool = {
+  functionDeclarations: [{
+    name: "update_file",
+    description: "Atualiza ou cria um arquivo no repositório com novo conteúdo. Use isso quando o usuário pedir alterações no código.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        filename: {
+          type: Type.STRING,
+          description: "O nome do arquivo a ser editado (ex: index.html, style.css)."
+        },
+        content: {
+          type: Type.STRING,
+          description: "O conteúdo COMPLETO do arquivo. Não use diffs ou snippets, forneça o arquivo inteiro."
+        },
+        reasoning: {
+          type: Type.STRING,
+          description: "Uma explicação curta do que foi alterado."
+        }
+      },
+      required: ["filename", "content", "reasoning"]
+    }
+  }]
 };
 
 // REQUISITO: Fast AI responses (Flash-Lite)
@@ -68,23 +94,76 @@ export const askGitMentorWithSearch = async (question: string): Promise<{text: s
   }
 };
 
-// REQUISITO: AI powered chatbot (Gemini 3 Pro)
-export const streamChatResponse = async function* (history: {role: string, parts: {text: string}[]}[], newMessage: string) {
+// Interface para retorno do Chat Agent
+export interface IChatResponseChunk {
+    text?: string;
+    toolCall?: {
+        id: string;
+        name: string;
+        args: any;
+    };
+}
+
+// REQUISITO: AI powered chatbot (Gemini 3 Pro) com capacidade de AGENTE
+export const streamChatResponse = async function* (
+    history: {role: string, parts: {text: string}[]}[], 
+    newMessage: string,
+    currentFiles: Record<string, string>
+): AsyncGenerator<IChatResponseChunk> {
     const ai = getAiClient();
     if (!ai) {
-        yield "Chat indisponível.";
+        yield { text: "Chat indisponível." };
         return;
     }
 
+    // Prepara o contexto dos arquivos para o System Instruction
+    const fileContext = Object.entries(currentFiles)
+        .map(([name, content]) => `--- FILE: ${name} ---\n${content}\n--- END FILE ---`)
+        .join('\n');
+
+    const systemInstruction = `
+        Você é o NexusVC AI, um assistente de engenharia de software integrado a um sistema de versionamento.
+        Você tem permissão total para ler e MODIFICAR os arquivos do projeto.
+        
+        CONTEXTO ATUAL DOS ARQUIVOS:
+        ${fileContext}
+
+        Se o usuário pedir para alterar, criar ou corrigir código:
+        1. Analise os arquivos fornecidos.
+        2. CHAME A FERRAMENTA 'update_file' com o novo conteúdo completo.
+        3. Explique brevemente o que você fez.
+    `;
+
     const chat = ai.chats.create({
         model: 'gemini-3-pro-preview',
-        history: history
+        history: history,
+        config: {
+            systemInstruction: systemInstruction,
+            tools: [updateFileTool]
+        }
     });
 
     const result = await chat.sendMessageStream({ message: newMessage });
     
     for await (const chunk of result) {
-        yield chunk.text;
+        // Verifica se há chamadas de função (Tools)
+        const functionCalls = chunk.functionCalls;
+        if (functionCalls && functionCalls.length > 0) {
+            for (const call of functionCalls) {
+                yield { 
+                    toolCall: {
+                        id: call.id || 'unknown', // ID nem sempre vem no chunk simplificado, mas tratamos no loop
+                        name: call.name,
+                        args: call.args
+                    }
+                };
+            }
+        }
+
+        // Verifica se há texto
+        if (chunk.text) {
+            yield { text: chunk.text };
+        }
     }
 }
 
