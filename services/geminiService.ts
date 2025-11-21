@@ -1,4 +1,5 @@
 
+
 import { GoogleGenAI, Type, FunctionDeclaration, Tool } from "@google/genai";
 
 const getAiClient = () => {
@@ -104,15 +105,17 @@ export interface IChatResponseChunk {
     };
 }
 
-// REQUISITO: AI powered chatbot (Gemini 3 Pro) com capacidade de AGENTE
+// REQUISITO: AI powered chatbot (Gemini 3 Pro ou 2.5 Flash) com capacidade de AGENTE
 export const streamChatResponse = async function* (
     history: {role: string, parts: {text: string}[]}[], 
     newMessage: string,
-    currentFiles: Record<string, string>
+    currentFiles: Record<string, string>,
+    modelName: string = 'gemini-3-pro-preview'
 ): AsyncGenerator<IChatResponseChunk> {
+    // Sempre cria um novo cliente para garantir a chave mais recente
     const ai = getAiClient();
     if (!ai) {
-        yield { text: "Chat indisponível." };
+        yield { text: "Erro: API Key não configurada. Por favor conecte sua conta." };
         return;
     }
 
@@ -122,20 +125,26 @@ export const streamChatResponse = async function* (
         .join('\n');
 
     const systemInstruction = `
-        Você é o NexusVC AI, um assistente de engenharia de software integrado a um sistema de versionamento.
-        Você tem permissão total para ler e MODIFICAR os arquivos do projeto.
+        Você é o NexusVC Code Agent.
+        Seu objetivo é atuar como um Programador Sênior que tem acesso direto aos arquivos do usuário.
         
+        FOCO:
+        - NÃO explique comandos Git ou tutoriais de terminal. Se o usuário perguntar sobre Git, diga que seu foco é edição de código e sugira o uso do "Mentor Git" no menu lateral.
+        - SEU FOCO é alterar código: HTML, CSS, JS, TS, React, etc.
+        - Você DEVE usar a ferramenta 'update_file' para aplicar alterações solicitadas.
+
         CONTEXTO ATUAL DOS ARQUIVOS:
         ${fileContext}
 
         Se o usuário pedir para alterar, criar ou corrigir código:
-        1. Analise os arquivos fornecidos.
-        2. CHAME A FERRAMENTA 'update_file' com o novo conteúdo completo.
-        3. Explique brevemente o que você fez.
+        1. Analise os arquivos fornecidos no contexto.
+        2. Planeje a alteração necessária.
+        3. CHAME A FERRAMENTA 'update_file' com o novo conteúdo completo do arquivo.
+        4. Explique brevemente o que foi alterado no código.
     `;
 
     const chat = ai.chats.create({
-        model: 'gemini-3-pro-preview',
+        model: modelName,
         history: history,
         config: {
             systemInstruction: systemInstruction,

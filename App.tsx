@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   GitBranch, 
@@ -54,12 +53,25 @@ import {
   Monitor,
   Tag,
   HardDrive,
-  Wrench
+  Wrench,
+  Zap,
+  Star,
+  LogIn
 } from 'lucide-react';
 import { ICommit, IRepoState, FileStatus, IContextMenu, TaskType } from './types';
 import { generateSmartCommitMessage, askGitMentorWithSearch, shapeProject, IAiGeneratedFile, streamChatResponse, explainChanges } from './services/geminiService';
 import { gitQueue } from './services/gitQueue';
 import { NexusDB } from './services/sqliteService';
+
+// Ensure window.aistudio types are recognized if not globally declared
+declare global {
+    interface Window {
+        aistudio?: {
+            hasSelectedApiKey: () => Promise<boolean>;
+            openSelectKey: () => Promise<void>;
+        }
+    }
+}
 
 // --- Initial Mock Data (Enriched for Graph) ---
 const INITIAL_FILES = {
@@ -548,10 +560,30 @@ const Chatbot = ({
 }) => {
     const [isOpen, setIsOpen] = useState(false);
     const [messages, setMessages] = useState<{role: string, text: string, type?: 'text' | 'tool'}[]>([
-        { role: 'model', text: 'Olá! Sou o assistente virtual NexusVC. Posso ajudar com comandos Git ou editar seus arquivos diretamente. O que deseja fazer?', type: 'text' }
+        { role: 'model', text: 'Olá! Sou seu Agente de Código. Posso analisar os arquivos do projeto e realizar alterações no código para você. O que precisamos criar ou corrigir hoje?', type: 'text' }
     ]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [apiKeySet, setApiKeySet] = useState(false);
+    const [selectedModel, setSelectedModel] = useState<'gemini-2.5-flash' | 'gemini-3-pro-preview'>('gemini-2.5-flash');
+
+    // Check for API Key on mount or open
+    useEffect(() => {
+        const checkKey = async () => {
+            if (isOpen && window.aistudio) {
+                 const hasKey = await window.aistudio.hasSelectedApiKey();
+                 setApiKeySet(hasKey);
+            }
+        };
+        checkKey();
+    }, [isOpen]);
+
+    const handleLogin = async () => {
+        if (window.aistudio) {
+            await window.aistudio.openSelectKey();
+            setApiKeySet(true);
+        }
+    };
 
     const handleSend = async () => {
         if (!input.trim()) return;
@@ -567,7 +599,8 @@ const Chatbot = ({
                 parts: [{ text: m.text }]
             }));
 
-            const stream = streamChatResponse(history, userMsg, files);
+            // Pass chosen model
+            const stream = streamChatResponse(history, userMsg, files, selectedModel);
             
             // Add a placeholder for the model response
             setMessages(prev => [...prev, { role: 'model', text: '', type: 'text' }]);
@@ -617,7 +650,7 @@ const Chatbot = ({
             }
         } catch (e) {
             console.error(e);
-            setMessages(prev => [...prev, { role: 'model', text: 'Desculpe, ocorreu um erro na comunicação.', type: 'text' }]);
+            setMessages(prev => [...prev, { role: 'model', text: 'Desculpe, ocorreu um erro na comunicação ou a chave expirou.', type: 'text' }]);
         } finally {
             setIsLoading(false);
         }
@@ -639,43 +672,87 @@ const Chatbot = ({
         <div className="fixed bottom-8 right-8 w-96 h-[500px] bg-white rounded-xl shadow-2xl border border-slate-200 z-50 flex flex-col overflow-hidden">
             <div className="bg-slate-800 p-3 text-white flex justify-between items-center shadow-md">
                 <div className="flex flex-col">
-                    <span className="font-bold flex items-center gap-2"><Bot size={18}/> Nexus Agent</span>
-                    <span className="text-[10px] text-slate-300 flex items-center gap-1"><Wrench size={10}/> Acesso de Escrita Ativo</span>
+                    <span className="font-bold flex items-center gap-2"><Bot size={18}/> Nexus Code Agent</span>
+                    {apiKeySet ? (
+                         <div className="flex items-center gap-2 mt-1">
+                            {/* Model Switcher */}
+                            <button 
+                                onClick={() => setSelectedModel('gemini-2.5-flash')}
+                                className={`text-[9px] px-1.5 py-0.5 rounded border flex items-center gap-1 ${selectedModel === 'gemini-2.5-flash' ? 'bg-green-500 text-white border-green-400' : 'bg-slate-700 border-slate-600 text-slate-300'}`}
+                                title="Modelo Rápido e Econômico"
+                            >
+                                <Zap size={8}/> Flash 2.5
+                            </button>
+                            <button 
+                                onClick={() => setSelectedModel('gemini-3-pro-preview')}
+                                className={`text-[9px] px-1.5 py-0.5 rounded border flex items-center gap-1 ${selectedModel === 'gemini-3-pro-preview' ? 'bg-purple-500 text-white border-purple-400' : 'bg-slate-700 border-slate-600 text-slate-300'}`}
+                                title="Modelo Inteligente (Pro)"
+                            >
+                                <Star size={8}/> Pro 3.0
+                            </button>
+                         </div>
+                    ) : (
+                        <span className="text-[10px] text-orange-300 flex items-center gap-1"><Lock size={10}/> Autenticação Necessária</span>
+                    )}
                 </div>
                 <button onClick={() => setIsOpen(false)} className="hover:bg-slate-700 p-1 rounded"><X size={16}/></button>
             </div>
-            <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50">
-                {messages.map((m, i) => (
-                    <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                        {m.type === 'tool' ? (
-                            <div className="max-w-[90%] p-2 rounded bg-green-50 border border-green-200 text-green-800 text-xs flex items-center gap-2">
-                                <Wrench size={14}/> {m.text}
+            
+            {/* Auth Screen */}
+            {!apiKeySet ? (
+                <div className="flex-1 flex flex-col items-center justify-center p-6 bg-slate-50 text-center">
+                    <Bot size={48} className="text-blue-600 mb-4"/>
+                    <h3 className="font-bold text-slate-800 mb-2">Login Corporativo</h3>
+                    <p className="text-sm text-slate-600 mb-6">
+                        Para usar o Agente de Código, você precisa conectar sua conta Google Cloud (Gemini API).
+                    </p>
+                    <button 
+                        onClick={handleLogin}
+                        className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded font-bold shadow transition-colors"
+                    >
+                        <LogIn size={18}/> Conectar Conta Google
+                    </button>
+                     <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer" className="text-xs text-blue-500 mt-4 hover:underline">
+                        Informações de faturamento
+                    </a>
+                </div>
+            ) : (
+                // Chat Screen
+                <>
+                    <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50">
+                        {messages.map((m, i) => (
+                            <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                {m.type === 'tool' ? (
+                                    <div className="max-w-[90%] p-2 rounded bg-green-50 border border-green-200 text-green-800 text-xs flex items-center gap-2">
+                                        <Wrench size={14}/> {m.text}
+                                    </div>
+                                ) : (
+                                    <div className={`max-w-[85%] p-3 rounded-lg text-sm shadow-sm ${
+                                        m.role === 'user' 
+                                        ? 'bg-blue-600 text-white rounded-tr-none' 
+                                        : 'bg-white border border-slate-200 text-slate-800 rounded-tl-none'
+                                    }`}>
+                                        {m.text}
+                                    </div>
+                                )}
                             </div>
-                        ) : (
-                            <div className={`max-w-[85%] p-3 rounded-lg text-sm shadow-sm ${
-                                m.role === 'user' 
-                                ? 'bg-blue-600 text-white rounded-tr-none' 
-                                : 'bg-white border border-slate-200 text-slate-800 rounded-tl-none'
-                            }`}>
-                                {m.text}
-                            </div>
-                        )}
+                        ))}
+                        {isLoading && <div className="text-xs text-slate-400 ml-2 animate-pulse flex items-center gap-1"><Sparkles size={10}/> Processando com {selectedModel === 'gemini-3-pro-preview' ? 'Gemini 3.0' : 'Flash 2.5'}...</div>}
                     </div>
-                ))}
-                {isLoading && <div className="text-xs text-slate-400 ml-2 animate-pulse flex items-center gap-1"><Sparkles size={10}/> Processando...</div>}
-            </div>
-            <div className="p-3 border-t border-slate-200 flex gap-2 bg-white">
-                <input 
-                    className="flex-1 border border-slate-300 rounded px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
-                    value={input}
-                    onChange={e => setInput(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && handleSend()}
-                    placeholder="Ex: Adicione um botão vermelho no index.html"
-                />
-                <button onClick={handleSend} disabled={isLoading} className="p-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 shadow-sm transition-colors">
-                    <Send size={18} />
-                </button>
-            </div>
+                    <div className="p-3 border-t border-slate-200 flex gap-2 bg-white">
+                        <input 
+                            className="flex-1 border border-slate-300 rounded px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                            value={input}
+                            onChange={e => setInput(e.target.value)}
+                            onKeyDown={e => e.key === 'Enter' && handleSend()}
+                            placeholder="Ex: Adicione um botão vermelho no index.html"
+                        />
+                        <button onClick={handleSend} disabled={isLoading} className="p-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 shadow-sm transition-colors">
+                            <Send size={18} />
+                        </button>
+                    </div>
+                </>
+            )}
         </div>
     );
 };
@@ -1550,500 +1627,4 @@ export default function App() {
                 {repo.mergeState.conflicts.length > 0 && (
                     <div className="bg-red-100 border border-red-300 text-red-800 p-3 rounded flex items-center gap-3 shadow-sm animate-pulse">
                         <ShieldAlert size={24} />
-                        <div className="flex-1">
-                            <p className="font-bold text-sm">CONFLITO DE MERGE DETECTADO</p>
-                            <p className="text-xs">O Git entrou em estado "Unmerged" (UU). Você deve resolver manualmente abaixo.</p>
-                        </div>
-                    </div>
-                )}
-
-                {/* Editor / 3-Way Merge Area */}
-                <div className="flex-1 border border-slate-300 rounded overflow-hidden shadow-sm flex flex-col">
-                    <div className="bg-slate-100 px-3 py-1 border-b border-slate-300 flex justify-between items-center h-8">
-                         <span className="text-xs font-bold text-slate-600 uppercase flex items-center gap-2">
-                            {getFileStatus(selectedFile) === FileStatus.Conflicted 
-                                ? <><GitMerge size={14}/> Resolução de Conflito 3-Way</> 
-                                : <><FileCode size={14}/> Editor de Arquivo</>
-                            }
-                        </span>
-                    </div>
-                    
-                    <div className="flex-1 relative overflow-hidden">
-                        {getFileStatus(selectedFile) === FileStatus.Conflicted ? (
-                            // MODULE 5: 3-WAY MERGE UI
-                            <ThreeWayMergeViewer 
-                                filename={selectedFile}
-                                ours={repo.originalFiles[selectedFile] || ''}
-                                theirs={repo.mergeState.theirs[selectedFile] || ''}
-                                result={repo.files[selectedFile]}
-                                onResultChange={(val) => setRepo(p => ({...p, files: {...p.files, [selectedFile]: val}}))}
-                            />
-                        ) : (
-                            // Standard Editor
-                            <textarea
-                                value={repo.files[selectedFile]}
-                                onChange={(e) => setRepo(p => ({...p, files: {...p.files, [selectedFile]: e.target.value}}))}
-                                className="w-full h-full p-4 font-mono text-sm resize-none outline-none text-slate-800"
-                            />
-                        )}
-                    </div>
-                    {getFileStatus(selectedFile) === FileStatus.Conflicted && (
-                         <div className="bg-red-50 p-2 border-t border-red-200 flex justify-end">
-                             <button 
-                                onClick={() => resolveConflict(selectedFile, repo.files[selectedFile])}
-                                className="bg-red-600 text-white px-4 py-1 text-xs font-bold rounded shadow hover:bg-red-700"
-                             >
-                                Marcar como Resolvido (git add)
-                             </button>
-                         </div>
-                    )}
-                </div>
-
-                {/* File List */}
-                <div className="h-48 border border-slate-300 rounded overflow-hidden flex flex-col bg-white">
-                     <div className="bg-slate-100 border-b border-slate-300 px-4 py-1 text-[11px] font-bold text-slate-600 uppercase flex">
-                        <span className="w-10">Status</span>
-                        <span className="flex-1">Arquivo</span>
-                     </div>
-                     <div className="overflow-auto flex-1">
-                        {Object.keys(repo.files).map(filename => {
-                            const status = getFileStatus(filename);
-                            let code = '  ';
-                            let icon = <div className="w-4"/>;
-                            let color = 'text-slate-800';
-
-                            // Module 1: Advanced Status Icons
-                            if (status === FileStatus.Modified) { code = ' M'; icon = <CheckCircle2 size={14} className="text-red-500"/>; color = 'text-red-600'; }
-                            if (status === FileStatus.Untracked) { code = '??'; icon = <FilePlus size={14} className="text-blue-500"/>; color = 'text-blue-600'; }
-                            if (status === FileStatus.Conflicted) { code = 'UU'; icon = <AlertTriangle size={14} className="text-orange-600"/>; color = 'text-orange-700 bg-orange-50'; }
-
-                            return (
-                                <div 
-                                    key={filename} 
-                                    className={`flex items-center px-2 py-1 text-xs border-b border-slate-50 hover:bg-blue-50 cursor-pointer ${selectedFile === filename ? 'bg-blue-100' : ''} ${color}`}
-                                    onClick={() => setSelectedFile(filename)}
-                                    onContextMenu={(e) => handleRightClick(e, filename)}
-                                >
-                                    <span className="w-10 font-mono font-bold opacity-50">{code}</span>
-                                    <span className="mr-2">{icon}</span>
-                                    <span className="font-medium">{filename}</span>
-                                </div>
-                            )
-                        })}
-                     </div>
-                </div>
-             </div>
-           )}
-
-           {/* NEW MODE: DIFF VIEWER */}
-           {viewMode === 'diff' && diffFile && (
-               <div className="h-full p-0">
-                   <DiffViewer 
-                        filename={diffFile} 
-                        original={repo.originalFiles[diffFile] || ''} 
-                        modified={repo.files[diffFile] || ''} 
-                        onClose={() => setViewMode('explorer')}
-                   />
-               </div>
-           )}
-
-           {/* NEW MODE: LIVE PREVIEW */}
-           {viewMode === 'preview' && (
-               <div className="h-full p-4 bg-slate-200">
-                   <LivePreview files={repo.files} />
-               </div>
-           )}
-
-           {/* NEW MODE: ARCHITECT */}
-           {viewMode === 'architect' && (
-               <div className="flex flex-col h-full">
-                   <div className="p-6 bg-gradient-to-r from-slate-900 to-slate-800 text-white flex justify-between items-center shadow-md">
-                       <div>
-                           <h2 className="text-xl font-bold flex items-center gap-2"><BrainCircuit/> Arquiteto de Software (Thinking Mode)</h2>
-                           <p className="text-xs text-slate-400 mt-1">Gemini 3.0 Pro com Thinking Budget (32k). Ideal para arquitetura complexa.</p>
-                       </div>
-                   </div>
-
-                   <div className="flex-1 flex overflow-hidden">
-                       {/* Input Area */}
-                       <div className="w-1/3 p-4 border-r border-slate-200 bg-slate-50 flex flex-col gap-4">
-                           <div className="flex-1">
-                               <label className="block text-xs font-bold uppercase text-slate-500 mb-2">Prompt de Arquitetura</label>
-                               <textarea
-                                   value={architectPrompt}
-                                   onChange={e => setArchitectPrompt(e.target.value)}
-                                   className="w-full h-64 border border-slate-300 rounded p-3 text-sm focus:border-purple-500 outline-none shadow-sm"
-                                   placeholder="Ex: Crie uma página de login moderna com CSS embutido. O formulário deve ter campos para email e senha, e um botão verde."
-                               />
-                           </div>
-                           <button 
-                                onClick={handleArchitectGenerate}
-                                disabled={isArchitectWorking || !architectPrompt}
-                                className="w-full py-3 bg-purple-600 text-white font-bold rounded shadow hover:bg-purple-700 disabled:opacity-50 flex items-center justify-center gap-2"
-                            >
-                                {isArchitectWorking ? <RefreshCw className="animate-spin"/> : <Sparkles/>}
-                                {isArchitectWorking ? 'Pensando e Gerando...' : 'Gerar Estrutura'}
-                            </button>
-                       </div>
-
-                       {/* Results Area */}
-                       <div className="flex-1 bg-slate-100 p-4 overflow-auto">
-                           {proposedChanges.length === 0 ? (
-                               <div className="h-full flex flex-col items-center justify-center text-slate-400">
-                                   <Bot size={48} className="mb-4 opacity-20"/>
-                                   <p className="text-sm">Os arquivos gerados aparecerão aqui para revisão.</p>
-                                   {isArchitectWorking && <p className="text-xs text-purple-600 mt-2 animate-pulse">Thinking in progress...</p>}
-                               </div>
-                           ) : (
-                               <div className="space-y-4">
-                                   <div className="flex justify-between items-center mb-2">
-                                       <h3 className="font-bold text-slate-700">Arquivos Propostos ({proposedChanges.length})</h3>
-                                       <button onClick={applyArchitectChanges} className="bg-green-600 text-white px-4 py-2 rounded text-xs font-bold hover:bg-green-700 shadow flex items-center gap-2">
-                                           <CheckCircle2 size={14}/> Aplicar ao Projeto
-                                       </button>
-                                   </div>
-                                   
-                                   {proposedChanges.map((file, idx) => (
-                                       <div key={idx} className="bg-white rounded border border-slate-300 shadow-sm overflow-hidden">
-                                           <div className="bg-slate-50 px-3 py-2 border-b border-slate-200 flex justify-between items-center">
-                                               <span className="font-bold text-sm flex items-center gap-2"><FileCode size={14} className="text-blue-500"/> {file.filename}</span>
-                                               <span className="text-xs text-slate-500 italic">{file.reasoning}</span>
-                                           </div>
-                                           <pre className="p-3 text-xs font-mono text-slate-700 overflow-x-auto bg-slate-50 max-h-40">
-                                               {file.content}
-                                           </pre>
-                                       </div>
-                                   ))}
-                               </div>
-                           )}
-                       </div>
-                   </div>
-               </div>
-           )}
-
-           {/* MODULE 6: TASK WIZARD */}
-           {viewMode === 'task_wizard' && (
-               <div className="flex items-center justify-center h-full bg-slate-50">
-                   <div className="bg-white border border-slate-300 shadow-xl rounded w-[500px]">
-                       <div className="bg-gradient-to-r from-blue-600 to-blue-500 text-white p-4 rounded-t font-bold flex items-center gap-2">
-                           <Sparkles size={18}/> Wizard de Nova Tarefa
-                       </div>
-                       <div className="p-6 space-y-4">
-                           <p className="text-sm text-slate-600">Este assistente garante que as políticas de branches sejam seguidas.</p>
-                           
-                           <div>
-                               <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Tipo da Tarefa</label>
-                               <div className="grid grid-cols-3 gap-2">
-                                   {['feature', 'bugfix', 'hotfix'].map(t => (
-                                       <button 
-                                            key={t}
-                                            onClick={() => setTaskType(t as TaskType)}
-                                            className={`p-2 border rounded text-sm font-bold capitalize ${taskType === t ? 'bg-blue-50 border-blue-500 text-blue-700' : 'border-slate-200 hover:bg-slate-50'}`}
-                                        >
-                                            {t}
-                                        </button>
-                                   ))}
-                               </div>
-                           </div>
-                           
-                           <div>
-                               <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Nome da Tarefa (Descrição Curta)</label>
-                               <div className="flex items-center border border-slate-300 rounded overflow-hidden focus-within:border-blue-500">
-                                   <div className="bg-slate-100 px-3 py-2 text-sm text-slate-500 font-mono border-r border-slate-300">
-                                       {taskType}/
-                                   </div>
-                                   <input 
-                                        type="text" 
-                                        className="flex-1 p-2 text-sm outline-none" 
-                                        placeholder="tela-login-v2"
-                                        value={taskName}
-                                        onChange={e => setTaskName(e.target.value)}
-                                   />
-                               </div>
-                           </div>
-
-                           <div className="bg-blue-50 p-3 rounded border border-blue-100 text-xs text-blue-800">
-                               <span className="font-bold">Preview:</span> git checkout -b {taskType}/{taskName.toLowerCase().replace(/\s+/g, '-') || '...'}
-                           </div>
-                       </div>
-                       <div className="bg-slate-50 p-4 border-t border-slate-200 flex justify-end gap-2 rounded-b">
-                           <button onClick={() => setViewMode('explorer')} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-200 rounded">Cancelar</button>
-                           <button onClick={handleTaskStart} disabled={!taskName} className="px-4 py-2 text-sm bg-blue-600 text-white font-bold rounded hover:bg-blue-700 disabled:opacity-50">Iniciar Tarefa</button>
-                       </div>
-                   </div>
-               </div>
-           )}
-
-           {/* GRAPH LOG MODE */}
-           {viewMode === 'log' && (
-               <div className="flex flex-col h-full">
-                   <div className="p-2 border-b border-slate-300 bg-slate-50 flex justify-between items-center">
-                       <h2 className="font-bold text-slate-700 text-sm flex items-center gap-2"><GitBranch size={16}/> Gráfico de Revisão</h2>
-                       <div className="text-xs text-slate-500 flex gap-2">
-                           <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-blue-500"></div> master</span>
-                           <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-green-500"></div> feature</span>
-                       </div>
-                   </div>
-                   <div className="flex-1 overflow-auto p-4 bg-slate-100">
-                        <div className="border border-slate-300 bg-white shadow-sm rounded-sm overflow-hidden">
-                            <div className="bg-slate-200 px-2 py-1 flex text-[10px] font-bold text-slate-600 border-b border-slate-300 uppercase">
-                                <div className="w-40">Grafo</div>
-                                <div className="flex-1">Mensagem</div>
-                                <div className="w-32">Autor</div>
-                                <div className="w-24 text-right">Data</div>
-                            </div>
-                            <GitGraph 
-                                commits={repo.commits} 
-                                onRowContextMenu={(e, commitId) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    setContextMenu({
-                                        visible: true,
-                                        x: e.clientX,
-                                        y: e.clientY,
-                                        targetCommitId: commitId
-                                    });
-                                }}
-                                onReset={(id) => handleHardReset(id)}
-                            />
-                        </div>
-                   </div>
-               </div>
-           )}
-
-           {/* MODULE 4.1: REMOTE SETTINGS */}
-           {viewMode === 'settings' && (
-                <div className="p-8 max-w-xl mx-auto">
-                    <div className="flex items-center justify-between mb-6">
-                        <h2 className="font-bold text-xl flex items-center gap-2 text-slate-800"><Settings size={24}/> Configurações do NexusVC</h2>
-                        <button onClick={() => setViewMode('explorer')} className="text-slate-400 hover:text-slate-600"><X/></button>
-                    </div>
-
-                    {/* Embedded DB Stats */}
-                     <div className="bg-amber-50 p-4 rounded border border-amber-200 mb-6">
-                        <h3 className="text-sm font-bold text-amber-800 flex items-center gap-2 mb-2">
-                            <Database size={16} /> Banco de Dados Local (SQLite Embedded)
-                        </h3>
-                        <p className="text-xs text-amber-700 mb-3">
-                            Usado para cache de ícones de status e histórico de repositórios (similar ao TortoiseGit Cache).
-                        </p>
-                        <div className="flex justify-between items-center text-xs text-slate-600 bg-white p-2 rounded border border-amber-100">
-                            <span>Entradas em Cache: <strong>{NexusDB.cache.count()}</strong></span>
-                            <button 
-                                onClick={() => { 
-                                    NexusDB.cache.clear(); 
-                                    alert('Cache de ícones limpo.'); 
-                                }} 
-                                className="text-red-600 hover:underline"
-                            >
-                                Limpar Cache
-                            </button>
-                        </div>
-                    </div>
-
-                    {/* List of Remotes */}
-                    <div className="bg-white p-6 rounded shadow-lg border border-slate-200 mb-6">
-                        <h3 className="text-sm font-bold text-slate-800 border-b pb-2 mb-4 flex justify-between items-center">
-                            <span>Remotes Configurados</span>
-                            <span className="text-xs bg-slate-100 text-slate-500 px-2 py-1 rounded-full">{repo.remotes.length}</span>
-                        </h3>
-                        
-                        {repo.remotes.length === 0 ? (
-                            <div className="text-center py-8 text-slate-400 text-sm italic bg-slate-50 rounded border border-dashed border-slate-200">
-                                Nenhum repositório remoto configurado.
-                            </div>
-                        ) : (
-                            <div className="space-y-3">
-                                {repo.remotes.map(r => (
-                                    <div key={r.name} className="flex items-center justify-between bg-slate-50 p-3 border border-slate-200 rounded group hover:border-blue-300 transition-colors">
-                                        <div className="flex items-center gap-3 overflow-hidden">
-                                            <div className="bg-white p-2 rounded border border-slate-200 text-slate-500 shadow-sm">
-                                                <Server size={16}/>
-                                            </div>
-                                            <div className="flex flex-col min-w-0">
-                                                <div className="font-bold text-sm text-slate-700 truncate" title={r.name}>{r.name}</div>
-                                                <div className="text-xs text-slate-500 font-mono truncate max-w-[250px] md:max-w-[350px]" title={r.url}>{r.url}</div>
-                                            </div>
-                                        </div>
-                                        <button 
-                                            onClick={() => removeRemote(r.name)} 
-                                            className="text-slate-400 hover:text-red-500 hover:bg-white p-2 rounded border border-transparent hover:border-red-100 transition-all shadow-sm opacity-60 group-hover:opacity-100"
-                                            title="Remover Remote"
-                                        >
-                                            <Trash2 size={16}/>
-                                        </button>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-
-                    <div className="bg-white p-6 rounded shadow-lg border border-slate-200 space-y-6">
-                        <h3 className="text-sm font-bold text-slate-800 border-b pb-2">Adicionar / Atualizar Remote</h3>
-                        {/* Remote Name */}
-                        <div>
-                            <label className="block text-xs font-bold text-slate-500 uppercase mb-2 flex items-center gap-2">
-                                <Server size={14}/> Nome do Remote
-                            </label>
-                            <input 
-                                className="w-full border border-slate-300 p-2 rounded bg-slate-50 text-sm font-mono" 
-                                value={remoteNameInput} 
-                                onChange={e => setRemoteNameInput(e.target.value)}
-                                placeholder="origin"
-                            />
-                        </div>
-
-                        {/* Remote URL */}
-                        <div>
-                            <label className="block text-xs font-bold text-slate-500 uppercase mb-2 flex items-center gap-2">
-                                <LinkIcon size={14}/> URL do Repositório
-                            </label>
-                            <input 
-                                className="w-full border border-slate-300 p-2 rounded text-sm font-mono focus:border-blue-500 outline-none transition-colors" 
-                                placeholder="git@github.com:empresa/repo.git  OU  https://github.com/..." 
-                                value={githubUrlInput} 
-                                onChange={e => setGithubUrlInput(e.target.value)}
-                            />
-                            
-                            {/* Protocol Detector Badges */}
-                            <div className="flex gap-2 mt-2">
-                                <span className={`text-[10px] font-bold px-2 py-1 rounded flex items-center gap-1 border ${githubUrlInput.startsWith('https://') ? 'bg-green-100 text-green-700 border-green-200' : 'bg-slate-100 text-slate-400 border-slate-200'}`}>
-                                    <Globe size={10}/> HTTPS
-                                </span>
-                                <span className={`text-[10px] font-bold px-2 py-1 rounded flex items-center gap-1 border ${githubUrlInput.startsWith('git@') ? 'bg-purple-100 text-purple-700 border-purple-200' : 'bg-slate-100 text-slate-400 border-slate-200'}`}>
-                                    <Lock size={10}/> SSH
-                                </span>
-                            </div>
-                        </div>
-
-                        <div className="bg-blue-50 border border-blue-100 p-3 rounded text-xs text-blue-800">
-                            <p className="font-bold mb-1">Preview do Comando:</p>
-                            <code className="font-mono">git remote add {remoteNameInput} {githubUrlInput || '<url>'}</code>
-                        </div>
-
-                        <button 
-                            onClick={handleRemoteConfig} 
-                            className="w-full bg-blue-600 text-white px-4 py-3 rounded font-bold text-sm hover:bg-blue-700 shadow-sm flex items-center justify-center gap-2"
-                        >
-                            <UploadCloud size={16}/> Configurar Remote
-                        </button>
-                    </div>
-                </div>
-           )}
-
-           {viewMode === 'mentor' && (
-               <div className="flex flex-col h-full p-4">
-                   <h2 className="font-bold text-lg mb-2 flex items-center gap-2"><Search/> Mentor Git (com Google Grounding)</h2>
-                   <div className="flex-1 bg-slate-50 border border-slate-200 rounded p-4 mb-4 overflow-auto text-sm whitespace-pre-wrap">
-                       {mentorResponse ? (
-                           <div>
-                               <p>{mentorResponse.text}</p>
-                               {mentorResponse.sources.length > 0 && (
-                                   <div className="mt-4 border-t pt-2">
-                                       <p className="font-bold text-xs text-slate-500 uppercase mb-1">Fontes do Google Search:</p>
-                                       <ul className="list-disc pl-4 text-xs text-blue-600">
-                                           {mentorResponse.sources.map((s, i) => <li key={i}><a href={s} target="_blank" rel="noopener noreferrer" className="hover:underline">{s}</a></li>)}
-                                       </ul>
-                                   </div>
-                               )}
-                           </div>
-                       ) : (
-                           "Como posso ajudar? Pesquisarei na documentação atual do Git para você."
-                       )}
-                   </div>
-                   <div className="flex gap-2">
-                       <input 
-                        className="flex-1 border p-2 rounded shadow-sm" 
-                        value={mentorQuery} 
-                        onChange={e => setMentorQuery(e.target.value)} 
-                        placeholder="Ex: Como resolver erro 'fatal: refusing to merge unrelated histories'?"
-                        onKeyDown={e => e.key === 'Enter' && handleAskMentor()}
-                       />
-                       <button onClick={handleAskMentor} disabled={isMentorSearching} className="bg-blue-600 text-white px-4 rounded font-bold hover:bg-blue-700 flex items-center gap-2">
-                           {isMentorSearching ? <RefreshCw className="animate-spin" size={16}/> : <Search size={16}/>}
-                           Pesquisar
-                       </button>
-                   </div>
-               </div>
-           )}
-           
-           {viewMode === 'commit' && (
-               <div className="absolute inset-0 bg-white z-20 flex flex-col p-4">
-                   <div className="flex justify-between items-center mb-4 border-b pb-2">
-                       <h2 className="font-bold text-lg flex items-center gap-2"><GitCommit/> Commitar Alterações</h2>
-                       <button onClick={() => setViewMode('explorer')}><X className="text-slate-400 hover:text-red-500"/></button>
-                   </div>
-                   
-                   <div className="flex-1 flex gap-4">
-                       <div className="flex-1 flex flex-col">
-                           <div className="flex items-center gap-2 mb-3 p-2 bg-yellow-50 border border-yellow-100 rounded">
-                               <input 
-                                   type="checkbox" 
-                                   id="amend-option"
-                                   checked={isAmend}
-                                   onChange={(e) => {
-                                       setIsAmend(e.target.checked);
-                                       if (e.target.checked) {
-                                           const headId = repo.branches.find(b => b.name === repo.currentBranch)?.headCommitId;
-                                           const head = repo.commits.find(c => c.id === headId);
-                                           if (head) setCommitMessage(head.message);
-                                       }
-                                   }}
-                                   className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
-                               />
-                               <label htmlFor="amend-option" className="text-xs font-bold text-slate-700 cursor-pointer select-none">
-                                   Emendar último commit (--amend)
-                               </label>
-                           </div>
-
-                           <label className="font-bold text-xs uppercase text-slate-500 mb-1">Mensagem</label>
-                           <textarea 
-                                className={`flex-1 border rounded p-2 font-mono text-sm outline-none resize-none ${commitMessage.split('\n')[0].length > 50 ? 'border-orange-300 bg-orange-50' : 'border-slate-300'}`}
-                                value={commitMessage}
-                                onChange={e => setCommitMessage(e.target.value)}
-                                placeholder="feat: descrição curta (max 50 chars)&#10;&#10;Descrição mais detalhada aqui..."
-                            />
-                            <div className={`text-right text-xs mt-1 ${commitMessage.split('\n')[0].length > 50 ? 'text-orange-600 font-bold' : 'text-slate-400'}`}>
-                                Linha de Assunto: {commitMessage.split('\n')[0].length}/50 chars
-                            </div>
-                       </div>
-                       <div className="w-1/3 border border-slate-300 rounded overflow-hidden flex flex-col">
-                           <div className="bg-slate-100 p-2 font-bold text-xs border-b">Arquivos Preparados (Staged)</div>
-                           <div className="flex-1 overflow-auto p-2">
-                               {Object.keys(filesToCommit).map(f => (
-                                   <div key={f} className="flex items-center gap-2 text-sm mb-1">
-                                       <CheckSquare size={14} className="text-blue-600"/> {f}
-                                   </div>
-                               ))}
-                           </div>
-                       </div>
-                   </div>
-                   
-                   <div className="flex justify-end gap-2 mt-4 pt-4 border-t">
-                       <button onClick={handleAICommitMessage} className="text-purple-600 hover:bg-purple-50 px-3 py-2 rounded text-sm font-bold flex items-center gap-1"><Sparkles size={14}/> Gerar com IA (Flash-Lite)</button>
-                       <button onClick={() => handleCommit(false)} className="border border-slate-300 px-4 py-2 rounded text-sm font-bold hover:bg-slate-50">Commitar</button>
-                       <button onClick={() => handleCommit(true)} className="bg-blue-600 text-white px-4 py-2 rounded text-sm font-bold hover:bg-blue-700">Commitar & Push</button>
-                   </div>
-               </div>
-           )}
-
-        </div>
-      </div>
-      
-      {/* Footer Status Bar */}
-      <div className="h-6 bg-[#007acc] text-white text-[11px] flex items-center px-2 justify-between select-none cursor-default">
-         <div className="flex gap-4">
-             <span className="flex items-center gap-1"><GitBranch size={10}/> {repo.currentBranch}</span>
-             <span>{useRebase ? 'Pull: Rebase' : 'Pull: Merge'}</span>
-             <span>Fila: {isBusy ? 'Processando...' : 'Ocioso'}</span>
-         </div>
-         <div className="flex gap-2 items-center">
-            <span className="flex items-center gap-1" title="File Watcher Ativo"><Eye size={10} className="animate-pulse"/> Watcher</span>
-            <span className="flex items-center gap-1" title="DB Local"><Database size={10}/> SQL: {NexusDB.cache.count()} recs</span>
-            <span>UTF-8</span>
-            <span>LF</span>
-         </div>
-      </div>
-    </div>
-  );
-}
+                        <div className="flex-1
